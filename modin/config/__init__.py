@@ -55,6 +55,11 @@ from modin.config.envvars import (
     TestReadFromPostgres,
     TestReadFromSqlServer,
     TrackFileLeaks,
+    Backend,
+    get_backend,
+    get_execution,
+    register_backend,
+    Execution,
 )
 from modin.config.pubsub import Parameter, ValueSource, context
 

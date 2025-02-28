@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import warnings
+from collections import defaultdict
 from typing import (
     IO,
     TYPE_CHECKING,
@@ -86,7 +87,7 @@ if TYPE_CHECKING:
     from modin.core.storage_formats import BaseQueryCompiler
 
 # Dictionary of extensions assigned to this class
-_DATAFRAME_EXTENSIONS_ = {}
+_DATAFRAME_EXTENSIONS_ = defaultdict(dict)
 
 
 @_inherit_docstrings(
@@ -146,6 +147,30 @@ class DataFrame(BasePandasDataset):
         copy=None,
         query_compiler: BaseQueryCompiler = None,
     ) -> None:
+        from modin.config import StorageFormat, Engine
+
+        if (
+            query_compiler is not None
+            and (query_compiler.storage_format, query_compiler.engine)
+            in _DATAFRAME_EXTENSIONS_
+            and "__init__"
+            in _DATAFRAME_EXTENSIONS_[
+                (query_compiler.storage_format, query_compiler.engine)
+            ]
+        ):
+            return _DATAFRAME_EXTENSIONS_[
+                (query_compiler.storage_format, query_compiler.engine)
+            ]["__init__"](self, data, index, columns, dtype, copy, query_compiler)
+        if (
+            query_compiler is None
+            and (StorageFormat.get(), Engine.get()) in _DATAFRAME_EXTENSIONS_
+            and "__init__"
+            in _DATAFRAME_EXTENSIONS_[(StorageFormat.get(), Engine.get())]
+        ):
+            return _DATAFRAME_EXTENSIONS_[(StorageFormat.get(), Engine.get())][
+                "__init__"
+            ](self, data, index, columns, dtype, copy, query_compiler)
+
         from modin.numpy import array
 
         # Siblings are other dataframes that share the same query compiler. We
@@ -2592,6 +2617,35 @@ class DataFrame(BasePandasDataset):
             s._parent_axis = 1
         return s
 
+    def __getattribute__(self, key):
+        if key == "_query_compiler":
+            return object.__getattribute__(self, key)
+        if (
+            hasattr(self, "_query_compiler")
+            and (self._query_compiler.storage_format, self._query_compiler.engine)
+            in _DATAFRAME_EXTENSIONS_
+        ):
+            if (
+                key
+                in _DATAFRAME_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ]
+            ):
+                maybe_method = _DATAFRAME_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ][key]
+                # DO NOT MERGE make a bound method either by using real
+                # subclasses, or with some other trick
+                return (
+                    functools.partial(maybe_method, self)
+                    if callable(maybe_method)
+                    else maybe_method
+                )
+            else:
+                return object.__getattribute__(self, key)
+        else:
+            return object.__getattribute__(self, key)
+
     @disable_logging
     def __getattr__(self, key) -> Any:
         """
@@ -2612,7 +2666,16 @@ class DataFrame(BasePandasDataset):
         try to get `key` from ``DataFrame`` fields.
         """
         try:
-            return _DATAFRAME_EXTENSIONS_.get(key, object.__getattribute__(self, key))
+            if (
+                hasattr(self, "_query_compiler")
+                and (self._query_compiler.storage_format, self._query_compiler.engine)
+                in _DATAFRAME_EXTENSIONS_
+            ):
+                return _DATAFRAME_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ].get(key, object.__getattribute__(self, key))
+            else:
+                return object.__getattribute__(self, key)
         except AttributeError as err:
             if key not in _ATTRS_NO_LOOKUP and key in self.columns:
                 return self[key]

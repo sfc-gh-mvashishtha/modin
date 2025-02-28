@@ -31,6 +31,7 @@ from modin.config.pubsub import (
     Parameter,
     ValueSource,
 )
+from modin import set_execution
 
 
 class EnvironmentVariable(Parameter, type=str, abstract=True):
@@ -244,6 +245,13 @@ class Engine(EnvironmentVariable, type=str):
         )
 
     @classmethod
+    def put(self, value: str) -> None:
+        super().put(value)
+        Backend._put_without_updating_engine(
+            _EXECUTION_TO_BACKEND[Execution(StorageFormat.get(), value)]
+        )
+
+    @classmethod
     @doc(Parameter.add_option.__doc__)
     def add_option(cls, choice: Any) -> Any:
         choice = super().add_option(choice)
@@ -255,9 +263,87 @@ class Engine(EnvironmentVariable, type=str):
 class StorageFormat(EnvironmentVariable, type=str):
     """Engine to run on a single node of distribution."""
 
+    @classmethod
+    def put(cls, value: str) -> None:
+        super().put(value)
+        Backend._put_without_updating_storage_format(
+            _EXECUTION_TO_BACKEND[Execution(value, Engine.get())]
+        )
+
     varname = "MODIN_STORAGE_FORMAT"
     default = "Pandas"
     choices = ("Pandas", "Native")
+
+
+from enum import Enum, unique
+
+
+class Backend(EnvironmentVariable, type=str):
+    """Backend to use for execution."""
+
+    @classmethod
+    def _put_without_updating_engine(cls, value: str) -> None:
+        super().put(value)
+        StorageFormat.put(_BACKEND_TO_EXECUTION[cls.get()].storage_format)
+
+    @classmethod
+    def _put_without_updating_storage_format(cls, value: str) -> None:
+        super().put(value)
+        Engine.put(_BACKEND_TO_EXECUTION[cls.get()].engine)
+
+    @classmethod
+    def put(cls, value: str) -> None:
+        super().put(value)
+        execution = _BACKEND_TO_EXECUTION[cls.get()]
+        set_execution(execution.engine, execution.storage_format)
+
+    class BuiltInBackend(Enum):
+        RAY = "Ray"
+        DASK = "Dask"
+        PANDAS = "Pandas"
+        PYTHON = "Python"
+        UNIDIST = "Unidist"
+
+    varname = "MODIN_BACKEND"
+    choices = ("Ray", "Dask", "Pandas", "Python", "Unidist")
+
+    @classmethod
+    def _get_default(cls) -> str:
+        return _EXECUTION_TO_BACKEND[Execution(StorageFormat.get(), Engine.get())]
+
+
+from collections import namedtuple
+
+Execution = namedtuple("Execution", ["storage_format", "engine"])
+
+
+def register_backend(name: str, execution: Execution) -> None:
+    name = Backend.normalize(name)
+    assert name not in _BACKEND_TO_EXECUTION, f"Backend {name} is already registered"
+    assert (
+        execution not in _EXECUTION_TO_BACKEND
+    ), f"Execution {execution} is already registered"
+    _BACKEND_TO_EXECUTION[name] = execution
+    _EXECUTION_TO_BACKEND[execution] = name
+
+
+_BACKEND_TO_EXECUTION = {}
+_EXECUTION_TO_BACKEND = {}
+
+
+register_backend(Backend.BuiltInBackend.RAY.value, Execution("Pandas", "Ray"))
+register_backend(Backend.BuiltInBackend.DASK.value, Execution("Pandas", "Dask"))
+register_backend(Backend.BuiltInBackend.PANDAS.value, Execution("Pandas", "Python"))
+register_backend(Backend.BuiltInBackend.PYTHON.value, Execution("Native", "Native"))
+register_backend(Backend.BuiltInBackend.UNIDIST.value, Execution("Pandas", "Unidist"))
+
+
+def get_backend(storage_format: str, engine: str) -> str:
+    return _EXECUTION_TO_BACKEND[Execution(storage_format, engine)]
+
+
+def get_execution(backend: str) -> Execution:
+    return _BACKEND_TO_EXECUTION[Backend.normalize(backend)]
 
 
 class IsExperimental(EnvironmentVariable, type=bool):

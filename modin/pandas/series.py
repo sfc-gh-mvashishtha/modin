@@ -59,8 +59,11 @@ if TYPE_CHECKING:
 
     from .dataframe import DataFrame
 
+from collections import defaultdict
+import functools
+
 # Dictionary of extensions assigned to this class
-_SERIES_EXTENSIONS_ = {}
+_SERIES_EXTENSIONS_ = defaultdict(dict)
 
 
 @_inherit_docstrings(
@@ -330,6 +333,35 @@ class Series(BasePandasDataset):
     @_doc_binary_op(operation="integer division", bin_op="floordiv")
     def __rfloordiv__(self, right) -> Series:
         return self.rfloordiv(right)
+
+    def __getattribute__(self, key):
+        if key == "_query_compiler":
+            return object.__getattribute__(self, key)
+        if (
+            hasattr(self, "_query_compiler")
+            and (self._query_compiler.storage_format, self._query_compiler.engine)
+            in _SERIES_EXTENSIONS_
+        ):
+            if (
+                key
+                in _SERIES_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ]
+            ):
+                maybe_method = _SERIES_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ][key]
+                # DO NOT MERGE make a bound method either by using real
+                # subclasses, or with some other trick
+                return (
+                    functools.partial(maybe_method, self)
+                    if callable(maybe_method)
+                    else maybe_method
+                )
+            else:
+                return object.__getattribute__(self, key)
+        else:
+            return object.__getattribute__(self, key)
 
     @disable_logging
     def __getattr__(self, key: Hashable) -> Any:

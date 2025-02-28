@@ -18,7 +18,11 @@ import modin.pandas as pd
 
 
 def _set_attribute_on_obj(
-    name: str, extensions_dict: dict, obj: Union[pd.DataFrame, pd.Series, ModuleType]
+    name: str,
+    extensions_dict: dict,
+    obj: Union[pd.DataFrame, pd.Series, ModuleType],
+    engine,
+    storage_format,
 ):
     """
     Create a new or override existing attribute on obj.
@@ -37,7 +41,6 @@ def _set_attribute_on_obj(
     decorator
         Returns the decorator function.
     """
-
     def decorator(new_attr: Any):
         """
         The decorator for a function or class to be assigned to name
@@ -52,14 +55,13 @@ def _set_attribute_on_obj(
         new_attr
             Unmodified new_attr is return from the decorator.
         """
-        extensions_dict[name] = new_attr
-        setattr(obj, name, new_attr)
+        extensions_dict[(storage_format, engine)][name] = new_attr
         return new_attr
 
     return decorator
 
 
-def register_dataframe_accessor(name: str):
+def register_dataframe_accessor(name: str, engine, storage_format):
     """
     Registers a dataframe attribute with the name provided.
 
@@ -90,11 +92,11 @@ def register_dataframe_accessor(name: str):
         Returns the decorator function.
     """
     return _set_attribute_on_obj(
-        name, pd.dataframe._DATAFRAME_EXTENSIONS_, pd.DataFrame
+        name, pd.dataframe._DATAFRAME_EXTENSIONS_, pd.DataFrame, engine, storage_format
     )
 
 
-def register_series_accessor(name: str):
+def register_series_accessor(name: str, engine: str, storage_format: str):
     """
     Registers a series attribute with the name provided.
 
@@ -124,7 +126,10 @@ def register_series_accessor(name: str):
     decorator
         Returns the decorator function.
     """
-    return _set_attribute_on_obj(name, pd.series._SERIES_EXTENSIONS_, pd.Series)
+    # DO NOT MERGE FIXME
+    return _set_attribute_on_obj(
+        name, pd.series._SERIES_EXTENSIONS_, pd.Series, engine, storage_format
+    )
 
 
 def register_pd_accessor(name: str):
@@ -160,4 +165,5 @@ def register_pd_accessor(name: str):
     decorator
         Returns the decorator function.
     """
-    return _set_attribute_on_obj(name, pd._PD_EXTENSIONS_, pd)
+    # DO NOT MERGE FIXME
+    return lambda func: func
