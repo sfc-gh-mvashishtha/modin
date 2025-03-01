@@ -2637,9 +2637,13 @@ class DataFrame(BasePandasDataset):
                 # DO NOT MERGE make a bound method either by using real
                 # subclasses, or with some other trick
                 return (
-                    functools.partial(maybe_method, self)
-                    if callable(maybe_method)
-                    else maybe_method
+                    maybe_method.__get__(self)
+                    if isinstance(maybe_method, property)
+                    else (
+                        functools.partial(maybe_method, self)
+                        if callable(maybe_method)
+                        else maybe_method
+                    )
                 )
             else:
                 return object.__getattribute__(self, key)
@@ -2665,6 +2669,8 @@ class DataFrame(BasePandasDataset):
         First try to use `__getattribute__` method. If it fails
         try to get `key` from ``DataFrame`` fields.
         """
+        if key == "_query_compiler":
+            return object.__getattribute__(self, key)
         try:
             if (
                 hasattr(self, "_query_compiler")
@@ -2706,6 +2712,25 @@ class DataFrame(BasePandasDataset):
         #   before it appears in __dict__.
         if key in ("_query_compiler", "_siblings") or key in self.__dict__:
             pass
+        elif (
+            hasattr(self, "_query_compiler")
+            and (
+                key
+                in _DATAFRAME_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ]
+            )
+            and isinstance(
+                _DATAFRAME_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ][key],
+                property,
+            )
+        ):
+            _DATAFRAME_EXTENSIONS_[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ][key].__set__(self, value)
+            return
         # we have to check for the key in `dir(self)` first in order not to trigger columns computation
         elif key not in dir(self) and key in self:
             self.__setitem__(key, value)
@@ -3377,3 +3402,43 @@ class DataFrame(BasePandasDataset):
         return self._inflate_light, (self._query_compiler, pid)
 
     # Persistance support methods - END
+
+
+# NOTE: we need to override dunder methods differently because python usually
+# calls e.g. type(df).__repr__(df) instead of getattr(df, __repr__)()
+
+
+def _make_do_dunder(name, original_dunder):
+    def _do_dunder(self, *args, **kwargs):
+        if (
+            hasattr(self, "_query_compiler")
+            and (self._query_compiler.storage_format, self._query_compiler.engine)
+            in _DATAFRAME_EXTENSIONS_
+        ) and name in _DATAFRAME_EXTENSIONS_[
+            (self._query_compiler.storage_format, self._query_compiler.engine)
+        ]:
+            return _DATAFRAME_EXTENSIONS_[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ][name](self, *args, **kwargs)
+        else:
+            return original_dunder(self, *args, **kwargs)
+
+    return _do_dunder
+
+
+from types import FunctionType, MethodType
+
+for method_name in dir(DataFrame):
+    if (
+        isinstance(getattr(DataFrame, method_name), FunctionType)
+        and method_name.startswith("__")
+        and method_name.endswith("__")
+        and method_name not in ("__getattr__", "__getattribute__")
+        and getattr(DataFrame, method_name)
+        is not getattr(BasePandasDataset, method_name, None)
+    ):
+        setattr(
+            DataFrame,
+            method_name,
+            _make_do_dunder(method_name, getattr(DataFrame, method_name)),
+        )

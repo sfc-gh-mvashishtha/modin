@@ -102,6 +102,9 @@ class Series(BasePandasDataset):
     _pandas_class = pandas.Series
     __array_priority__ = pandas.Series.__array_priority__
 
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
     def __init__(
         self,
         data=None,
@@ -354,9 +357,13 @@ class Series(BasePandasDataset):
                 # DO NOT MERGE make a bound method either by using real
                 # subclasses, or with some other trick
                 return (
-                    functools.partial(maybe_method, self)
-                    if callable(maybe_method)
-                    else maybe_method
+                    maybe_method.__get__(self)
+                    if isinstance(maybe_method, property)
+                    else (
+                        functools.partial(maybe_method, self)
+                        if callable(maybe_method)
+                        else maybe_method
+                    )
                 )
             else:
                 return object.__getattribute__(self, key)
@@ -382,9 +389,24 @@ class Series(BasePandasDataset):
         First try to use `__getattribute__` method. If it fails
         try to get `key` from `Series` fields.
         """
+        if key == "_query_compiler":
+            return object.__getattribute__(self, key)
         try:
-            return _SERIES_EXTENSIONS_.get(key, object.__getattribute__(self, key))
+            return object.__getattribute__(self, key)
         except AttributeError as err:
+            if (
+                hasattr(self, "_query_compiler")
+                and (self._query_compiler.storage_format, self._query_compiler.engine)
+                in _SERIES_EXTENSIONS_
+            ) and (
+                "__getattr__"
+                in _SERIES_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ]
+            ):
+                return _SERIES_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ]["__getattr__"](self, key)
             if key not in _ATTRS_NO_LOOKUP and key in self.index:
                 return self[key]
             raise err
@@ -531,6 +553,28 @@ class Series(BasePandasDataset):
             self._setitem_slice(key, value)
         else:
             self.loc[key] = value
+
+    def __setattr__(self, key, value):
+        if (
+            hasattr(self, "_query_compiler")
+            and (
+                key
+                in _SERIES_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ]
+            )
+            and isinstance(
+                _SERIES_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ][key],
+                property,
+            )
+        ):
+            _SERIES_EXTENSIONS_[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ][key].__set__(self, value)
+            return
+        super().__setattr__(key, value)
 
     @_doc_binary_op(operation="subtraction", bin_op="sub")
     def __sub__(self, right) -> Series:
@@ -2792,3 +2836,39 @@ class Series(BasePandasDataset):
         return self._inflate_light, (self._query_compiler, self.name, pid)
 
     # Persistance support methods - END
+
+
+def _make_do_dunder(name, original_dunder):
+    def _do_dunder(self, *args, **kwargs):
+        if (
+            hasattr(self, "_query_compiler")
+            and (self._query_compiler.storage_format, self._query_compiler.engine)
+            in _SERIES_EXTENSIONS_
+        ) and name in _SERIES_EXTENSIONS_[
+            (self._query_compiler.storage_format, self._query_compiler.engine)
+        ]:
+            return _SERIES_EXTENSIONS_[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ][name](self, *args, **kwargs)
+        else:
+            return original_dunder(self, *args, **kwargs)
+
+    return _do_dunder
+
+
+from types import FunctionType, MethodType
+
+for method_name in dir(Series):
+    if (
+        isinstance(getattr(Series, method_name), FunctionType)
+        and method_name.startswith("__")
+        and method_name.endswith("__")
+        and method_name not in ("__getattr__", "__getattribute__")
+        and getattr(Series, method_name)
+        is not getattr(BasePandasDataset, method_name, None)
+    ):
+        setattr(
+            Series,
+            method_name,
+            _make_do_dunder(method_name, getattr(Series, method_name)),
+        )

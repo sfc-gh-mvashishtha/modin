@@ -4417,3 +4417,57 @@ class BasePandasDataset(ClassLogger):
             self._update_inplace(result._query_compiler)
             return None
         return result
+
+
+def _make_do_dunder(name, original_dunder):
+    def _do_dunder(self, *args, **kwargs):
+        from .dataframe import _DATAFRAME_EXTENSIONS_
+
+        if isinstance(self, pd.DataFrame):
+            if (
+                hasattr(self, "_query_compiler")
+                and (self._query_compiler.storage_format, self._query_compiler.engine)
+                in _DATAFRAME_EXTENSIONS_
+            ) and name in _DATAFRAME_EXTENSIONS_[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ]:
+                return _DATAFRAME_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ][name](self, *args, **kwargs)
+            else:
+                return original_dunder(self, *args, **kwargs)
+        elif isinstance(self, pd.Series):
+            from .series import _SERIES_EXTENSIONS_
+
+            if (
+                hasattr(self, "_query_compiler")
+                and (self._query_compiler.storage_format, self._query_compiler.engine)
+                in _SERIES_EXTENSIONS_
+            ) and name in _SERIES_EXTENSIONS_[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ]:
+                return _SERIES_EXTENSIONS_[
+                    (self._query_compiler.storage_format, self._query_compiler.engine)
+                ][name](self, *args, **kwargs)
+            else:
+                return original_dunder(self, *args, **kwargs)
+        else:
+            return original_dunder(self, *args, **kwargs)
+
+    return _do_dunder
+
+
+from types import FunctionType, MethodType
+
+for method_name in dir(BasePandasDataset):
+    if (
+        isinstance(getattr(BasePandasDataset, method_name), FunctionType)
+        and method_name.startswith("__")
+        and method_name.endswith("__")
+        and method_name not in ("__getattr__", "__getattribute__")
+    ):
+        setattr(
+            BasePandasDataset,
+            method_name,
+            _make_do_dunder(method_name, getattr(BasePandasDataset, method_name)),
+        )

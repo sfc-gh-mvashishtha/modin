@@ -15,6 +15,7 @@ from types import ModuleType
 from typing import Any, Union
 
 import modin.pandas as pd
+from collections import defaultdict
 
 
 def _set_attribute_on_obj(
@@ -27,20 +28,13 @@ def _set_attribute_on_obj(
     """
     Create a new or override existing attribute on obj.
 
-    Parameters
-    ----------
-    name : str
-        The name of the attribute to assign to `obj`.
-    extensions_dict : dict
-        The dictionary mapping extension name to `new_attr` (assigned below).
-    obj : DataFrame, Series, or modin.pandas
-        The object we are assigning the new attribute to.
 
     Returns
     -------
     decorator
         Returns the decorator function.
     """
+
     def decorator(new_attr: Any):
         """
         The decorator for a function or class to be assigned to name
@@ -59,6 +53,11 @@ def _set_attribute_on_obj(
         return new_attr
 
     return decorator
+
+
+_PD_OVERRIDES = defaultdict(dict)
+
+from modin.config import StorageFormat, Engine
 
 
 def register_dataframe_accessor(name: str, engine, storage_format):
@@ -132,38 +131,39 @@ def register_series_accessor(name: str, engine: str, storage_format: str):
     )
 
 
-def register_pd_accessor(name: str):
-    """
-    Registers a pd namespace attribute with the name provided.
+def register_pd_accessor(name, engine, storage_format):
 
-    This is a decorator that assigns a new attribute to modin.pandas. It can be used
-    with the following syntax:
+    def wrapper(value):
+        _PD_OVERRIDES[(engine, storage_format, name)] = value
+        return value
 
-    ```
-    @register_pd_accessor("new_function")
-    def my_new_pd_function(*args, **kwargs):
-        # logic goes here
-        return
-    ```
-
-    The new attribute can then be accessed with the name provided:
-
-    ```
-    import modin.pandas as pd
-
-    pd.new_method(*my_args, **my_kwargs)
-    ```
+    return wrapper
 
 
-    Parameters
-    ----------
-    name : str
-        The name of the attribute to assign to modin.pandas.
+import sys
+from types import ModuleType
+import itertools
 
-    Returns
-    -------
-    decorator
-        Returns the decorator function.
-    """
-    # DO NOT MERGE FIXME
-    return lambda func: func
+
+class VerboseModule(ModuleType):
+
+    def __getattribute__(self, name):
+        if (Engine.get(), StorageFormat.get(), name) in _PD_OVERRIDES:
+            return _PD_OVERRIDES[(Engine.get(), StorageFormat.get(), name)]
+        return super().__getattribute__(name)
+
+    def __dir__(self):
+        result = set(
+            itertools.chain(
+                super().__dir__(),
+                (
+                    name
+                    for engine, storage_format, name in _PD_OVERRIDES
+                    if engine == Engine.get() and storage_format == StorageFormat.get()
+                ),
+            )
+        )
+        return result
+
+
+sys.modules[pd.__name__].__class__ = VerboseModule
