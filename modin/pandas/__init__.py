@@ -141,7 +141,7 @@ from modin.pandas import arrays, errors
 from modin.utils import show_versions
 
 from .. import __version__
-from .dataframe import DataFrame
+from .dataframe import DataFrame, DataFrameImpl
 from .general import (
     concat,
     crosstab,
@@ -193,7 +193,7 @@ from .io import (
     to_pickle,
 )
 from .plotting import Plotting as plotting
-from .series import Series
+from .series import Series, SeriesImpl
 
 
 def __getattr__(name: str):
@@ -220,8 +220,9 @@ def __getattr__(name: str):
 __all__ = [  # noqa: F405
     "_PD_EXTENSIONS_",
     "DataFrame",
+    "DataFrameImpl",
     "Series",
-    "read_csv",
+    "SeriesImpl" "read_csv",
     "read_parquet",
     "read_json",
     "read_html",

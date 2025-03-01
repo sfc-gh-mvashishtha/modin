@@ -18,7 +18,6 @@ from __future__ import annotations
 import abc
 import pickle as pkl
 import re
-from modin.config import get_backend, get_execution, context
 import warnings
 from functools import cached_property
 from typing import (
@@ -2032,9 +2031,6 @@ class BasePandasDataset(ClassLogger):
 
     @property
     def iloc(self) -> _iLocIndexer:  # noqa: RT01, D200
-        return self._get_iloc()
-
-    def _get_iloc(self):
         """
         Purely integer-location based indexing for selection by position.
         """
@@ -2081,10 +2077,7 @@ class BasePandasDataset(ClassLogger):
         return self._binary_op("lt", other, axis=axis, level=level, dtypes=np.bool_)
 
     @property
-    def loc(self) -> _LocIndexer:
-        return self._get_loc()
-
-    def _get_loc(self) -> _LocIndexer:  # noqa: RT01, D200
+    def loc(self) -> _LocIndexer:  # noqa: RT01, D200
         """
         Get a group of rows and columns by label(s) or a boolean array.
         """
@@ -4395,25 +4388,3 @@ class BasePandasDataset(ClassLogger):
 
     # namespace for additional Modin functions that are not available in Pandas
     modin: ModinAPI = CachedAccessor("modin", ModinAPI)
-
-    def get_backend(self):
-        return get_backend(
-            self._query_compiler.storage_format, self._query_compiler.engine
-        )
-
-    def set_backend(self, backend: str, inplace: bool = False):
-        from modin.core.execution.dispatching.factories.dispatcher import (
-            FactoryDispatcher,
-        )
-        from modin import set_execution
-
-        execution = get_execution(backend)
-        engine, storage_format = set_execution(
-            execution.engine, execution.storage_format
-        )
-        result = type(self)(self._to_pandas())
-        set_execution(engine, storage_format)
-        if inplace:
-            self._update_inplace(result._query_compiler)
-            return None
-        return result

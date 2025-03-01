@@ -87,13 +87,222 @@ if TYPE_CHECKING:
     from modin.core.storage_formats import BaseQueryCompiler
 
 # Dictionary of extensions assigned to this class
-_DATAFRAME_EXTENSIONS_ = defaultdict(dict)
+_DATAFRAME_EXTENSIONS_ = {}
+
+
+class DataFrame:
+
+    def __init__(
+        self,
+        data=None,
+        index=None,
+        columns=None,
+        dtype=None,
+        copy=None,
+        query_compiler: BaseQueryCompiler = None,
+    ):
+        from modin.config import StorageFormat, Engine
+        from modin.core.storage_formats.pandas.native_query_compiler import (
+            NativeQueryCompiler,
+        )
+
+        if (
+            query_compiler is not None
+            and (
+                query_compiler.engine,
+                query_compiler.storage_format,
+            )
+            in _DATAFRAME_EXTENSIONS_
+        ):
+            impl_class = _DATAFRAME_EXTENSIONS_[
+                (query_compiler.engine, query_compiler.storage_format)
+            ]
+        elif (
+            isinstance(data, (DataFrame, Series))
+            and (
+                data._query_compiler.engine,
+                data._query_compiler.storage_format,
+            )
+            in _DATAFRAME_EXTENSIONS_
+        ):
+            impl_class = _DATAFRAME_EXTENSIONS_[
+                (data._query_compiler.engine, data._query_compiler.storage_format)
+            ]
+        elif is_dict_like(data) and any(
+            isinstance(data[key], (Series, DataFrame)) for key in data.keys()
+        ):
+            raise NotImplementedError
+        elif (Engine.get(), StorageFormat.get()) in _DATAFRAME_EXTENSIONS_:
+            impl_class = _DATAFRAME_EXTENSIONS_[(Engine.get(), StorageFormat.get())]
+        else:
+            impl_class = DataFrameImpl
+        self._impl = impl_class(data, index, columns, dtype, copy, query_compiler)
+
+    def __getattr__(self, name):
+        from functools import wraps
+
+        if name == "_impl":
+            return object.__getattribute__(self, name)
+        result = getattr(self._impl, name)
+        if not callable(result):
+            return result
+
+        from .series import SeriesImpl
+
+        @wraps(result)
+        def wrapper(*args, **kwargs):
+            method_result = result(*args, **kwargs)
+            if isinstance(method_result, DataFrameImpl):
+                return type(self)(query_compiler=method_result._query_compiler)
+            if isinstance(method_result, SeriesImpl):
+                return Series(query_compiler=method_result._query_compiler)
+            return method_result
+
+        return wrapper
+
+    def __setattr__(self, name, value):
+        if name == "_impl":
+            return object.__setattr__(self, name, value)
+        return setattr(self._impl, name, value)
+
+    def __delattr__(self, name):
+        if name == "_impl":
+            return object.__delattr__(self, name)
+        return delattr(self._impl, name)
+
+    def __dir__(self):
+        return [*dir(self._impl), "get_backend", "set_backend"]
+
+    def get_backend(self):
+        from modin.config import get_backend, get_execution, context
+
+        return get_backend(
+            self._query_compiler.storage_format, self._query_compiler.engine
+        )
+
+    def set_backend(self, backend: str, inplace: bool = False):
+        from modin.config import get_backend, get_execution, context
+        from modin.core.execution.dispatching.factories.dispatcher import (
+            FactoryDispatcher,
+        )
+        from modin import set_execution
+
+        execution = get_execution(backend)
+        engine, storage_format = set_execution(
+            execution.engine, execution.storage_format
+        )
+        import modin.pandas as pd
+
+        result = (pd.DataFrame if self._is_dataframe else pd.Series)(self._to_pandas())
+        set_execution(engine, storage_format)
+        if inplace:
+            self._impl = result._impl
+            return None
+        return result
+
+
+def _make_do_dunder(name):
+    def _do_dunder(self, *args, **kwargs):
+
+        from .series import SeriesImpl
+
+        try:
+            method_result = getattr(self._impl, name)(*args, **kwargs)
+        except:
+            raise
+        if isinstance(method_result, DataFrameImpl):
+            return type(self)(query_compiler=method_result._query_compiler)
+        if isinstance(method_result, SeriesImpl):
+            return Series(query_compiler=method_result._query_compiler)
+        return method_result
+
+    return _do_dunder
+
+
+for method_name in (
+    # NOTE dropping del because python calls it but we don't define it.
+    # "__del__",
+    "__repr__",
+    "__str__",
+    "__bytes__",
+    "__format__",
+    "__lt__",
+    "__le__",
+    "__eq__",
+    "__ne__",
+    "__gt__",
+    "__ge__",
+    "__hash__",
+    "__bool__",
+    "__len__",
+    "__length_hint__",
+    "__getitem__",
+    "__setitem__",
+    "__delitem__",
+    "__missing__",
+    "__iter__",
+    "__reversed__",
+    "__contains__",
+    "__add__",
+    "__sub__",
+    "__mul__",
+    "__matmul__",
+    "__truediv__",
+    "__floordiv__",
+    "__mod__",
+    "__divmod__",
+    "__pow__",
+    "__lshift__",
+    "__rshift__",
+    "__and__",
+    "__xor__",
+    "__or__",
+    "__radd__",
+    "__rsub__",
+    "__rmul__",
+    "__rmatmul__",
+    "__rtruediv__",
+    "__rfloordiv__",
+    "__rmod__",
+    "__rdivmod__",
+    "__rpow__",
+    "__rlshift__",
+    "__rrshift__",
+    "__rand__",
+    "__rxor__",
+    "__ror__",
+    "__iadd__",
+    "__isub__",
+    "__imul__",
+    "__imatmul__",
+    "__itruediv__",
+    "__ifloordiv__",
+    "__imod__",
+    "__ipow__",
+    "__ilshift__",
+    "__irshift__",
+    "__iand__",
+    "__ixor__",
+    "__ior__",
+    "__neg__",
+    "__pos__",
+    "__abs__",
+    "__invert__",
+    "__complex__",
+    "__int__",
+    "__index__",
+    "__round__",
+    "__trunc__",
+    "__floor__",
+    "__ceil__",
+):
+    setattr(DataFrame, method_name, _make_do_dunder(method_name))
 
 
 @_inherit_docstrings(
     pandas.DataFrame, excluded=[pandas.DataFrame.__init__], apilink="pandas.DataFrame"
 )
-class DataFrame(BasePandasDataset):
+class DataFrameImpl(BasePandasDataset):
     """
     Modin distributed representation of ``pandas.DataFrame``.
 
@@ -148,28 +357,6 @@ class DataFrame(BasePandasDataset):
         query_compiler: BaseQueryCompiler = None,
     ) -> None:
         from modin.config import StorageFormat, Engine
-
-        if (
-            query_compiler is not None
-            and (query_compiler.storage_format, query_compiler.engine)
-            in _DATAFRAME_EXTENSIONS_
-            and "__init__"
-            in _DATAFRAME_EXTENSIONS_[
-                (query_compiler.storage_format, query_compiler.engine)
-            ]
-        ):
-            return _DATAFRAME_EXTENSIONS_[
-                (query_compiler.storage_format, query_compiler.engine)
-            ]["__init__"](self, data, index, columns, dtype, copy, query_compiler)
-        if (
-            query_compiler is None
-            and (StorageFormat.get(), Engine.get()) in _DATAFRAME_EXTENSIONS_
-            and "__init__"
-            in _DATAFRAME_EXTENSIONS_[(StorageFormat.get(), Engine.get())]
-        ):
-            return _DATAFRAME_EXTENSIONS_[(StorageFormat.get(), Engine.get())][
-                "__init__"
-            ](self, data, index, columns, dtype, copy, query_compiler)
 
         from modin.numpy import array
 
@@ -2617,35 +2804,6 @@ class DataFrame(BasePandasDataset):
             s._parent_axis = 1
         return s
 
-    def __getattribute__(self, key):
-        if key == "_query_compiler":
-            return object.__getattribute__(self, key)
-        if (
-            hasattr(self, "_query_compiler")
-            and (self._query_compiler.storage_format, self._query_compiler.engine)
-            in _DATAFRAME_EXTENSIONS_
-        ):
-            if (
-                key
-                in _DATAFRAME_EXTENSIONS_[
-                    (self._query_compiler.storage_format, self._query_compiler.engine)
-                ]
-            ):
-                maybe_method = _DATAFRAME_EXTENSIONS_[
-                    (self._query_compiler.storage_format, self._query_compiler.engine)
-                ][key]
-                # DO NOT MERGE make a bound method either by using real
-                # subclasses, or with some other trick
-                return (
-                    functools.partial(maybe_method, self)
-                    if callable(maybe_method)
-                    else maybe_method
-                )
-            else:
-                return object.__getattribute__(self, key)
-        else:
-            return object.__getattribute__(self, key)
-
     @disable_logging
     def __getattr__(self, key) -> Any:
         """
@@ -2666,16 +2824,7 @@ class DataFrame(BasePandasDataset):
         try to get `key` from ``DataFrame`` fields.
         """
         try:
-            if (
-                hasattr(self, "_query_compiler")
-                and (self._query_compiler.storage_format, self._query_compiler.engine)
-                in _DATAFRAME_EXTENSIONS_
-            ):
-                return _DATAFRAME_EXTENSIONS_[
-                    (self._query_compiler.storage_format, self._query_compiler.engine)
-                ].get(key, object.__getattribute__(self, key))
-            else:
-                return object.__getattribute__(self, key)
+            object.__getattribute__(self, key)
         except AttributeError as err:
             if key not in _ATTRS_NO_LOOKUP and key in self.columns:
                 return self[key]
