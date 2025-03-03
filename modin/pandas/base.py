@@ -4411,7 +4411,15 @@ class BasePandasDataset(ClassLogger):
         engine, storage_format = set_execution(
             execution.engine, execution.storage_format
         )
-        result = type(self)(self._to_pandas())
+        from tqdm.notebook import trange
+
+        from modin.config import Backend
+
+        for i in trange(
+            1,
+            desc=f"Transferring data from {self.get_backend()} to {Backend.normalize(backend)} ...",
+        ):
+            result = type(self)(self._to_pandas())
         set_execution(engine, storage_format)
         if inplace:
             self._update_inplace(result._query_compiler)
