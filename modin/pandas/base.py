@@ -146,6 +146,10 @@ _DEFAULT_BEHAVIOUR = {
 
 _doc_binary_op_kwargs = {"returns": "BasePandasDataset", "left": "BasePandasDataset"}
 
+from collections import defaultdict
+
+_BASE_EXTENSIONS = defaultdict(dict)
+
 
 def _get_repr_axis_label_indexer(labels, num_for_repr):
     """
@@ -3961,6 +3965,37 @@ class BasePandasDataset(ClassLogger):
     def __ge__(self, right) -> Self:
         return self.ge(right)
 
+    @disable_logging
+    def __getattribute__(self, key):
+        import functools
+
+        if key in ("_query_compiler", "_original___getattribute___impl"):
+            return object.__getattribute__(self, key)
+
+        if (
+            hasattr(self, "_query_compiler")
+            and (self._query_compiler.storage_format, self._query_compiler.engine)
+            in _BASE_EXTENSIONS
+        ) and key in _BASE_EXTENSIONS[
+            (self._query_compiler.storage_format, self._query_compiler.engine)
+        ]:
+            maybe_method = _BASE_EXTENSIONS[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ][key]
+            # DO NOT MERGE make a bound method either by using real
+            # subclasses, or with some other trick
+            return (
+                maybe_method.__get__(self)
+                if isinstance(maybe_method, property)
+                else (
+                    functools.partial(maybe_method, self)
+                    if callable(maybe_method)
+                    else maybe_method
+                )
+            )
+        else:
+            return self._original___getattribute___impl(key)
+
     def __getitem__(self, key) -> Self:
         """
         Retrieve dataset according to `key`.
@@ -4318,7 +4353,7 @@ class BasePandasDataset(ClassLogger):
         )
 
     @disable_logging
-    def __getattribute__(self, item) -> Any:
+    def _original___getattribute___impl(self, item) -> Any:
         """
         Return item from the `BasePandasDataset`.
 
@@ -4428,37 +4463,18 @@ class BasePandasDataset(ClassLogger):
 
 
 def _make_do_dunder(name, original_dunder):
+
     def _do_dunder(self, *args, **kwargs):
-        from .dataframe import _DATAFRAME_EXTENSIONS_
-
-        if isinstance(self, pd.DataFrame):
-            if (
-                hasattr(self, "_query_compiler")
-                and (self._query_compiler.storage_format, self._query_compiler.engine)
-                in _DATAFRAME_EXTENSIONS_
-            ) and name in _DATAFRAME_EXTENSIONS_[
+        if (
+            hasattr(self, "_query_compiler")
+            and (self._query_compiler.storage_format, self._query_compiler.engine)
+            in _BASE_EXTENSIONS
+        ) and name in _BASE_EXTENSIONS[
+            (self._query_compiler.storage_format, self._query_compiler.engine)
+        ]:
+            return _BASE_EXTENSIONS[
                 (self._query_compiler.storage_format, self._query_compiler.engine)
-            ]:
-                return _DATAFRAME_EXTENSIONS_[
-                    (self._query_compiler.storage_format, self._query_compiler.engine)
-                ][name](self, *args, **kwargs)
-            else:
-                return original_dunder(self, *args, **kwargs)
-        elif isinstance(self, pd.Series):
-            from .series import _SERIES_EXTENSIONS_
-
-            if (
-                hasattr(self, "_query_compiler")
-                and (self._query_compiler.storage_format, self._query_compiler.engine)
-                in _SERIES_EXTENSIONS_
-            ) and name in _SERIES_EXTENSIONS_[
-                (self._query_compiler.storage_format, self._query_compiler.engine)
-            ]:
-                return _SERIES_EXTENSIONS_[
-                    (self._query_compiler.storage_format, self._query_compiler.engine)
-                ][name](self, *args, **kwargs)
-            else:
-                return original_dunder(self, *args, **kwargs)
+            ][name](self, *args, **kwargs)
         else:
             return original_dunder(self, *args, **kwargs)
 

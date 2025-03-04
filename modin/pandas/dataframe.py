@@ -2618,6 +2618,8 @@ class DataFrame(BasePandasDataset):
         return s
 
     def __getattribute__(self, key):
+        # if key == "max":
+        #     breakpoint()
         if key == "_query_compiler":
             return object.__getattribute__(self, key)
         if (
@@ -2645,9 +2647,9 @@ class DataFrame(BasePandasDataset):
                         else maybe_method
                     )
                 )
-            else:
-                return object.__getattribute__(self, key)
-        else:
+        try:
+            return super().__getattribute__(key)
+        except AttributeError as err:
             return object.__getattribute__(self, key)
 
     @disable_logging

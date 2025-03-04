@@ -344,30 +344,29 @@ class Series(BasePandasDataset):
             hasattr(self, "_query_compiler")
             and (self._query_compiler.storage_format, self._query_compiler.engine)
             in _SERIES_EXTENSIONS_
+        ) and (
+            key
+            in _SERIES_EXTENSIONS_[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ]
         ):
-            if (
-                key
-                in _SERIES_EXTENSIONS_[
-                    (self._query_compiler.storage_format, self._query_compiler.engine)
-                ]
-            ):
-                maybe_method = _SERIES_EXTENSIONS_[
-                    (self._query_compiler.storage_format, self._query_compiler.engine)
-                ][key]
-                # DO NOT MERGE make a bound method either by using real
-                # subclasses, or with some other trick
-                return (
-                    maybe_method.__get__(self)
-                    if isinstance(maybe_method, property)
-                    else (
-                        functools.partial(maybe_method, self)
-                        if callable(maybe_method)
-                        else maybe_method
-                    )
+            maybe_method = _SERIES_EXTENSIONS_[
+                (self._query_compiler.storage_format, self._query_compiler.engine)
+            ][key]
+            # DO NOT MERGE make a bound method either by using real
+            # subclasses, or with some other trick
+            return (
+                maybe_method.__get__(self)
+                if isinstance(maybe_method, property)
+                else (
+                    functools.partial(maybe_method, self)
+                    if callable(maybe_method)
+                    else maybe_method
                 )
-            else:
-                return object.__getattribute__(self, key)
-        else:
+            )
+        try:
+            return super().__getattribute__(key)
+        except AttributeError as err:
             return object.__getattribute__(self, key)
 
     @disable_logging

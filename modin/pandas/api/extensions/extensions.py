@@ -15,6 +15,8 @@ from types import ModuleType
 from typing import Any, Union
 
 import modin.pandas as pd
+import modin.pandas.base as base
+
 from collections import defaultdict
 
 
@@ -58,6 +60,12 @@ def _set_attribute_on_obj(
 _PD_OVERRIDES = defaultdict(dict)
 
 from modin.config import StorageFormat, Engine
+
+
+def register_base_accessor(name: str, engine, storage_format):
+    return _set_attribute_on_obj(
+        name, base._BASE_EXTENSIONS, object(), engine, storage_format
+    )
 
 
 def register_dataframe_accessor(name: str, engine, storage_format):
