@@ -158,7 +158,14 @@ def test_two_same_qc_types_noop(pico_df):
 
 def test_two_two_qc_types_rhs(pico_df, cluster_df):
     df3 = pico_df.concat(axis=1, other=cluster_df)
+
     assert type(df3) is type(cluster_df)  # should move to cluster
+    from modin.tests.pandas.utils import df_equals
+
+    df_equals(
+        df3.to_pandas(),
+        pandas.concat([pico_df.to_pandas(), cluster_df.to_pandas()], axis=1),
+    )
 
 
 def test_two_two_qc_types_lhs(pico_df, cluster_df):
