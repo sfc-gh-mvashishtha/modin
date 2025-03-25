@@ -26,9 +26,7 @@ from typing import Any, Dict, Tuple, TypeVar
 
 from pandas.core.indexes.frozen import FrozenList
 
-from modin.core.storage_formats.base.query_compiler import (
-    BaseQueryCompiler,
-)
+from modin.core.storage_formats.base.query_compiler import BaseQueryCompiler
 from modin.core.storage_formats.base.query_compiler_calculator import (
     BackendCostCalculator,
 )
@@ -151,9 +149,11 @@ def apply_argument_cast(obj: Fn) -> Fn:
         """
         if len(args) == 0 and len(kwargs) == 0:
             return
-        
-        from modin.core.execution.dispatching.factories.dispatcher import FactoryDispatcher
-        
+
+        from modin.core.execution.dispatching.factories.dispatcher import (
+            FactoryDispatcher,
+        )
+
         current_qc = args[0]
         calculator = BackendCostCalculator()
         calculator.add_query_compiler(current_qc)
@@ -178,7 +178,10 @@ def apply_argument_cast(obj: Fn) -> Fn:
                 return arg
             # TODO: Should use the factory dispatcher here to switch backends
             # TODO: handle the non-backend string approach
-            return FactoryDispatcher.from_pandas(current_qc.to_pandas(), calculator.calculate())
+            return FactoryDispatcher.from_pandas(
+                arg.to_pandas(), calculator.calculate()
+            )
+
         if isinstance(current_qc, BaseQueryCompiler):
             visit_nested_args(kwargs, register_query_compilers)
             visit_nested_args(args, register_query_compilers)
@@ -188,15 +191,16 @@ def apply_argument_cast(obj: Fn) -> Fn:
 
         result_backend = calculator.calculate()
         current_backend = args[0].get_backend()
-        #result_qc_type = calculator.calculate()
-        if "add" == obj.__name__:
-            breakpoint()
+        # result_qc_type = calculator.calculate()
+
         if result_backend == current_backend:
             return obj(*args, **kwargs)
         # TODO: Should use the factory dispatcher here to switch backends
         # TODO: handle the non-backend string approach
 
-        new_qc = FactoryDispatcher.from_pandas(current_qc.to_pandas(), calculator.calculate())
+        new_qc = FactoryDispatcher.from_pandas(
+            args[0].to_pandas(), calculator.calculate()
+        )
         obj_new = getattr(new_qc, obj.__name__)
         return obj_new(*args[1:], **kwargs)
 
