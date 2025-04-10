@@ -65,8 +65,8 @@ class BackendCostCalculator:
     def __init__(
         self, api_cls_name: Optional[str] = None, operation: Optional[str] = None
     ):
-        self._backend_data = {}
-        self._qc_list = []
+        self._backend_data: dict[str, AggregatedBackendData] = {}
+        self._qc_list: list[BaseQueryCompiler] = []
         self._result_backend = None
         self._api_cls_name = api_cls_name
         self._op = operation
@@ -106,7 +106,11 @@ class BackendCostCalculator:
                 if qc_cls_to not in qc_to_cls_costed:
                     qc_to_cls_costed.add(qc_cls_to)
                     backend_to = qc_to.get_backend()
-                    cost = qc_from.move_to_cost(qc_cls_to, self._api_cls_name, self._op)
+                    cost = qc_from.move_to_cost(
+                        other_qc_type=qc_cls_to,
+                        operation_status=None,                        
+                        api_cls_name=self._api_cls_name,
+                        operation=self._op)
                     if cost is not None:
                         self._add_cost_data(backend_to, cost)
                     else:

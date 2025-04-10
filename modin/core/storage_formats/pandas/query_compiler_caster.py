@@ -23,6 +23,7 @@ import functools
 import inspect
 from abc import ABC, abstractmethod
 from collections import defaultdict, namedtuple
+import logging
 from types import FunctionType, MethodType
 from typing import Any, Dict, Optional, Tuple, TypeVar, Union, ValuesView
 
@@ -30,7 +31,7 @@ from pandas.core.indexes.frozen import FrozenList
 from typing_extensions import Self
 
 from modin.config import Backend
-from modin.core.storage_formats.base.query_compiler import BaseQueryCompiler
+from modin.core.storage_formats.base.query_compiler import BaseQueryCompiler, OperationStatus
 from modin.core.storage_formats.base.query_compiler_calculator import (
     BackendCostCalculator,
 )
@@ -63,6 +64,10 @@ _NON_EXTENDABLE_ATTRIBUTES = {
     "_get_query_compiler",
     "_copy_into",
 }
+
+BackendAndClassName = namedtuple("BackendAndClassName", ["backend", "class_name"])
+
+_CLASS_AND_BACKEND_TO_POST_OP_SWITCH_METHODS: defaultdict[BackendAndClassName, set[str]] = defaultdict(set)
 
 
 class QueryCompilerCaster(ABC):
@@ -340,7 +345,7 @@ def wrap_function_in_argument_caster(
         Returns
         -------
         Any
-        """
+        """       
         if wrapping_function_type in (classmethod, staticmethod):
             # TODO: currently we don't support any kind of casting or extension
             # for classmethod or staticmethod.
@@ -404,7 +409,8 @@ def wrap_function_in_argument_caster(
             args = visit_nested_args(args, cast_to_qc)
             kwargs = visit_nested_args(kwargs, cast_to_qc)
         else:
-            result_backend = Backend.get()
+            result_backend = Backend.get()        
+
         if name in extensions[result_backend]:
             f_to_apply = extensions[result_backend][name]
         else:
@@ -431,6 +437,49 @@ def wrap_function_in_argument_caster(
             new_qc = new_castable._get_query_compiler()
             if original_qc is not new_qc:
                 new_castable._copy_into(original_castable)
+
+        if (
+            name in  _CLASS_AND_BACKEND_TO_POST_OP_SWITCH_METHODS[
+            BackendAndClassName(backend=result_backend, class_name=class_of_wrapped_fn)] and
+            isinstance(result, QueryCompilerCaster)
+            and (result_query_compiler := result._get_query_compiler()) is not None
+        ):
+
+            from modin.core.execution.dispatching.factories.dispatcher import FactoryDispatcher
+
+            # minimize cost_to - cost_from
+            min_move_cost = None
+            best_backend = None
+
+            for backend in Backend._BACKEND_TO_EXECUTION:
+                if backend in ("Ray", "Unidist", "Dask"):
+                    # get a segfault if we start to ray. generally, preparing the factories for these 
+                    # requires starting up their engines, which is confusing.
+                    continue
+                if backend == result_backend:
+                    continue
+                move_to_class = FactoryDispatcher._get_prepared_factory_for_backend(backend=backend).io_cls.query_compiler_cls
+                move_to_cost = result_query_compiler.move_to_cost(
+                    move_to_class, operation_status=OperationStatus.POST_OPERATION,
+                    api_cls_name=class_of_wrapped_fn, operation=name)
+                stay_cost = result_query_compiler.stay_cost(
+                        move_to_class, operation_status=OperationStatus.POST_OPERATION, 
+                        api_cls_name=class_of_wrapped_fn, operation=name
+                    )
+                if move_to_cost is not None and stay_cost is not None:
+                    move_cost = move_to_cost - stay_cost
+                    if move_cost < 0 and (min_move_cost is None or move_cost < min_move_cost):
+                        # BUG: for df of length 1, cloud -> pandas post-op costs -500, but cloud -> cloud post-op costs -750.
+                        min_move_cost = move_cost
+                        best_backend = backend
+                logging.getLogger().setLevel(logging.INFO)
+                logging.info(f"After operation {name}, considered moving to backend {backend} with move_to_cost {move_to_cost}, stay_cost {stay_cost}, and net cost {move_cost}")
+            if best_backend is not None:
+                logging.getLogger().setLevel(logging.INFO)                
+                logging.info(f"Chose to move to backend {best_backend}")
+                return result.move_to(best_backend)
+ 
+
         return result
 
     f_with_argument_casting._wrapped_method_for_casting = f
@@ -468,3 +517,7 @@ def wrap_free_function_in_argument_caster(name: str) -> callable:
         )
 
     return wrapper
+
+def register_method_for_post_op_switch(klass: Optional[type], backend: str, method: str):
+    _CLASS_AND_BACKEND_TO_POST_OP_SWITCH_METHODS[
+        BackendAndClassName(backend=backend, class_name=(klass.__name__ if klass is not None else None))].add(method)

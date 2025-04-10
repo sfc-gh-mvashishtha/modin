@@ -18,17 +18,18 @@ import pytest
 
 import modin.pandas as pd
 from modin.config.envvars import Backend, Engine, Execution
+from modin.config import context as config_context
 from modin.core.execution.dispatching.factories import factories
 from modin.core.execution.dispatching.factories.factories import BaseFactory
 from modin.core.io.io import BaseIO
-from modin.core.storage_formats.base.query_compiler import QCCoercionCost
+from modin.core.storage_formats.base.query_compiler import QCCoercionCost, OperationStatus
+from modin.core.storage_formats.pandas.query_compiler_caster import register_method_for_post_op_switch
 from modin.core.storage_formats.base.query_compiler_calculator import (
     BackendCostCalculator,
 )
 from modin.core.storage_formats.pandas.native_query_compiler import NativeQueryCompiler
 from modin.pandas.api.extensions import register_pd_accessor
 from modin.tests.pandas.utils import df_equals
-
 
 class CloudQC(NativeQueryCompiler):
     "Represents a cloud-hosted query compiler"
@@ -39,8 +40,8 @@ class CloudQC(NativeQueryCompiler):
     def max_cost(self):
         return QCCoercionCost.COST_IMPOSSIBLE
 
-    def move_to_cost(self, other_qc_cls, api_cls_name, op):
-        assert op is not None
+    def move_to_cost(self, other_qc_type, operation_status, api_cls_name, operation):
+        assert operation is not None
         assert api_cls_name in [
             None,
             "_iLocIndexer",
@@ -49,18 +50,27 @@ class CloudQC(NativeQueryCompiler):
             "DataFrame",
             "BasePandasDataset",
         ]
+
+        if (
+            operation_status is OperationStatus.POST_OPERATION
+        ):
+            return (
+                QCCoercionCost.COST_LOW if (
+                    other_qc_type is NativeQueryCompiler and
+                    self.get_axis_len(axis=0) < 10
+                ) else QCCoercionCost.COST_IMPOSSIBLE
+            )
+
         return {
             CloudQC: QCCoercionCost.COST_ZERO,
             ClusterQC: QCCoercionCost.COST_MEDIUM,
             DefaultQC: QCCoercionCost.COST_MEDIUM,
             LocalMachineQC: QCCoercionCost.COST_HIGH,
             PicoQC: QCCoercionCost.COST_IMPOSSIBLE,
-            OmniscientEagerQC: None,
-            OmniscientLazyQC: None,
-        }[other_qc_cls]
+        }.get(other_qc_type, None)
 
-    def stay_cost(self, other_qc_type, api_cls_name, op):
-        return QCCoercionCost.COST_HIGH
+    def stay_cost(self, other_qc_type, operation_status, api_cls_name, operation):
+        return QCCoercionCost.COST_HIGH    
 
 
 class ClusterQC(NativeQueryCompiler):
@@ -72,14 +82,14 @@ class ClusterQC(NativeQueryCompiler):
     def max_cost(self):
         return QCCoercionCost.COST_HIGH
 
-    def move_to_cost(self, other_qc_cls, api_cls_name, op):
+    def move_to_cost(self, other_qc_type, operation_status, api_cls_name, operation):
         return {
             CloudQC: QCCoercionCost.COST_MEDIUM,
             ClusterQC: QCCoercionCost.COST_ZERO,
             DefaultQC: None,  # cluster qc knows nothing about default qc
             LocalMachineQC: QCCoercionCost.COST_MEDIUM,
             PicoQC: QCCoercionCost.COST_HIGH,
-        }[other_qc_cls]
+        }[other_qc_type]
 
 
 class LocalMachineQC(NativeQueryCompiler):
@@ -91,13 +101,13 @@ class LocalMachineQC(NativeQueryCompiler):
     def max_cost(self):
         return QCCoercionCost.COST_MEDIUM
 
-    def move_to_cost(self, other_qc_cls, api_cls_name, op):
+    def move_to_cost(self, other_qc_type, operation_status, api_cls_name, operation):
         return {
             CloudQC: QCCoercionCost.COST_MEDIUM,
             ClusterQC: QCCoercionCost.COST_LOW,
             LocalMachineQC: QCCoercionCost.COST_ZERO,
             PicoQC: QCCoercionCost.COST_MEDIUM,
-        }[other_qc_cls]
+        }[other_qc_type]
 
 
 class PicoQC(NativeQueryCompiler):
@@ -109,13 +119,13 @@ class PicoQC(NativeQueryCompiler):
     def max_cost(self):
         return QCCoercionCost.COST_LOW
 
-    def move_to_cost(self, other_qc_cls, api_cls_name, op):
+    def move_to_cost(self, other_qc_type, operation_status, api_cls_name, operation):
         return {
             CloudQC: QCCoercionCost.COST_LOW,
             ClusterQC: QCCoercionCost.COST_LOW,
             LocalMachineQC: QCCoercionCost.COST_LOW,
             PicoQC: QCCoercionCost.COST_ZERO,
-        }[other_qc_cls]
+        }[other_qc_type]
 
 
 class AdversarialQC(NativeQueryCompiler):
@@ -124,12 +134,12 @@ class AdversarialQC(NativeQueryCompiler):
     def get_backend(self):
         return "Adversarial"
 
-    def move_to_cost(self, other_qc_cls, api_cls_name, op):
+    def move_to_cost(self, other_qc_type, operation_status, api_cls_name, operation):
         return {
             CloudQC: -1000,
             ClusterQC: 10000,
             AdversarialQC: QCCoercionCost.COST_ZERO,
-        }[other_qc_cls]
+        }[other_qc_type]
 
 
 class OmniscientEagerQC(NativeQueryCompiler):
@@ -139,8 +149,8 @@ class OmniscientEagerQC(NativeQueryCompiler):
         return "Eager"
 
     # keep other workloads from getting my workload
-    def move_to_cost(self, other_qc_cls, api_cls_name, op):
-        if OmniscientEagerQC is other_qc_cls:
+    def move_to_cost(self, other_qc_type, operation_status, api_cls_name, operation):
+        if OmniscientEagerQC is other_qc_type:
             return QCCoercionCost.COST_ZERO
         return QCCoercionCost.COST_IMPOSSIBLE
 
@@ -157,7 +167,7 @@ class OmniscientLazyQC(NativeQueryCompiler):
         return "Lazy"
 
     # encorage other engines to take my workload
-    def move_to_cost(self, other_qc_cls, api_cls_name, op):
+    def move_to_cost(self, other_qc_type, operation_status, api_cls_name, operation):
         return QCCoercionCost.COST_ZERO
 
     # try to keep other workloads from getting my workload
@@ -511,3 +521,14 @@ def test_stay_or_move_evaluation(cloud_df, default_df):
     move_cost = df._get_query_compiler().move_to_cost(cloud_cls, "Series", "myop")
     assert stay_cost is None
     assert move_cost is None
+
+
+def test_from_pandas_switches_backend():
+    with config_context(Backend="Cloud"):
+        big_df = pandas.DataFrame(list(range(10)))
+        small_df = pandas.DataFrame(list(range(1)))
+        assert pd.io.from_pandas(big_df).get_backend() == "Cloud"
+        assert pd.io.from_pandas(small_df).get_backend() == "Cloud"        
+        register_method_for_post_op_switch(klass=None, backend="Cloud", method="from_pandas")
+        assert pd.io.from_pandas(big_df).get_backend() == "Cloud"
+        assert pd.io.from_pandas(small_df).get_backend() == "Pandas"

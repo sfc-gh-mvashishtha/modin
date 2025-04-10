@@ -150,6 +150,12 @@ class QCCoercionCost(IntEnum):  # noqa: PR01
         ):
             raise ValueError("Query compiler coercsion cost out of range")
 
+from enum import Enum, auto, unique
+
+@unique
+class OperationStatus(Enum):
+    PRE_OPERATION = auto()
+    POST_OPERATION = auto()
 
 # FIXME: many of the BaseQueryCompiler methods are hiding actual arguments
 # by using *args and **kwargs. They should be spread into actual parameters.
@@ -312,6 +318,7 @@ class BaseQueryCompiler(
     def move_to_cost(
         self,
         other_qc_type: type,
+        operation_status: Optional[OperationStatus],
         api_cls_name: Optional[str] = None,
         operation: Optional[str] = None,
     ) -> int:
@@ -347,6 +354,7 @@ class BaseQueryCompiler(
     def stay_cost(
         self,
         other_qc_type: type,
+        operation_status: Optional[OperationStatus],        
         api_cls_name: Optional[str] = None,
         operation: Optional[str] = None,
     ) -> int:
