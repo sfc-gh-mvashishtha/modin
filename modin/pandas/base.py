@@ -4572,11 +4572,16 @@ class BasePandasDataset(QueryCompilerCaster, ClassLogger):
                 self._query_compiler,
             )
         if query_compiler is NotImplemented:
+            import time
+            print(f'started convert to pandas for set_backend() at {time.time()}')               
             pandas_self = self._query_compiler.to_pandas()
+            print(f'finished convert to pandas for set_backend() at {time.time()}')                 
             next(progress_iter)
+            print(f'started from_pandas() for set_backend() at {time.time()}')
             query_compiler = FactoryDispatcher.from_pandas(
                 df=pandas_self, backend=backend
             )
+            print(f'finished from_pandas() for set_backend() at {time.time()}')
         else:
             next(progress_iter)
         try:
